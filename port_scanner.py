@@ -1,106 +1,177 @@
-# Educational tool to scan TCP ports on a target host
-# Use only on authorized systems with explicit permission
+"""
+Ethical Local Network Port Scanner (Educational)
+
+DISCLAIMER:
+This tool is intended strictly for EDUCATIONAL PURPOSES.
+It scans only PRIVATE LOCAL NETWORKS and should be used
+ONLY on networks and systems you own or have permission to scan.
+
+The author is not responsible for misuse.
+"""
 
 import socket
-import sys
-import logging
 import threading
+import ipaddress
+import subprocess
+import platform
 from queue import Queue
-import time
-import re
 
-# Configure logging to a file
-logging.basicConfig(filename='port_scan.log', level=logging.INFO, format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+# ================= CONFIG =================
+PING_THREADS = 50     # Limited to avoid aggressive scanning
+PORT_THREADS = 50
+TIMEOUT = 1
+# =========================================
 
-# Expanded port-to-service mappings
-COMMON_PORTS = {
-    20: "FTP-DATA", 21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP",
-    53: "DNS", 80: "HTTP", 110: "POP3", 143: "IMAP", 443: "HTTPS",
-    445: "SMB", 1433: "MSSQL", 3306: "MySQL", 3389: "RDP", 5432: "PostgreSQL",
-    8080: "HTTP-Alt", 8443: "HTTPS-Alt", 50000: "Custom Chat App"  # Added for your chat app
+# Common well-known services (educational mapping)
+SERVICES = {
+    21: "FTP",
+    22: "SSH",
+    23: "Telnet",
+    25: "SMTP",
+    53: "DNS",
+    80: "HTTP",
+    443: "HTTPS",
+    3306: "MySQL",
+    8080: "HTTP-Alt"
 }
 
-def scan_port(host, port, results):
-    """Attempt to connect to a single port and log the result."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(1)  # 1-second timeout per port
+# ========== LOCAL NETWORK DETECTION ==========
+def detect_local_network():
+    """
+    Detects the private local network of the system.
+    Uses a UDP socket without sending any packets.
+    """
     try:
-        result = sock.connect_ex((host, port))
-        if result == 0:
-            service = COMMON_PORTS.get(port, "Unknown")
-            print(f"Port {port} is OPEN ({service})")
-            logging.info(f"Port {port} is OPEN ({service})")
-            results.append((port, service))
-        sock.close()
-    except Exception as e:
-        logging.error(f"Error scanning port {port}: {e}")
-    finally:
-        sock.close()
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))  # Used only to determine local interface
+        local_ip = s.getsockname()[0]
+        s.close()
 
-def scan_ports(host, start_port, end_port):
-    """Scan a range of ports on the target host using multiple threads."""
-    print(f"Scanning {host} from port {start_port} to {end_port}...")
-    logging.info(f"Starting scan on {host} from port {start_port} to {end_port}")
-    start_time = time.time()
+        network = ipaddress.ip_network(local_ip + "/24", strict=False)
 
-    results = []
-    queue = Queue()
-    threads = []
+        # Restrict scanning strictly to private networks
+        if not network.is_private:
+            return None
 
-    # Add ports to the queue
-    for port in range(start_port, end_port + 1):
-        queue.put(port)
+        return network
+    except Exception:
+        return None
+
+# ========== PING FUNCTIONS ==========
+def ping_host(ip):
+    """
+    Sends a single ICMP ping to check host availability.
+    """
+    param = "-n" if platform.system().lower() == "windows" else "-c"
+    cmd = ["ping", param, "1", ip]
+
+    return subprocess.call(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    ) == 0
+
+def discover_hosts(network):
+    """
+    Performs a parallel ping sweep to discover live hosts.
+    """
+    print("\n🔍 Discovering active devices on the local network...\n")
+
+    q = Queue()
+    live_hosts = []
+    lock = threading.Lock()
+
+    for ip in network.hosts():
+        q.put(str(ip))
 
     def worker():
-        while not queue.empty():
-            port = queue.get()
-            scan_port(host, port, results)
-            queue.task_done()
+        while not q.empty():
+            ip = q.get()
+            if ping_host(ip):
+                with lock:
+                    live_hosts.append(ip)
+            q.task_done()
 
-    # Start 50 threads for faster scanning
-    for _ in range(50):
-        t = threading.Thread(target=worker)
-        t.start()
-        threads.append(t)
+    for _ in range(PING_THREADS):
+        threading.Thread(target=worker, daemon=True).start()
 
-    # Wait for all threads to complete
-    for t in threads:
-        t.join()
+    q.join()
+    return live_hosts
 
-    # Sort and display results
-    results.sort()
-    if results:
-        print("\nOpen ports found:")
-        for port, service in results:
-            print(f"Port {port}: {service}")
-    else:
-        print("No open ports found.")
-    logging.info(f"Scan completed in {time.time() - start_time:.2f} seconds")
-    print(f"Scan completed in {time.time() - start_time:.2f} seconds")
+# ========== PORT SCANNING ==========
+def scan_port(ip, port):
+    """
+    Attempts a TCP connection to determine if a port is open.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(TIMEOUT)
+        if s.connect_ex((ip, port)) == 0:
+            service = SERVICES.get(port, "Unknown")
+            print(f"    [OPEN] {port:<5} {service}")
+        s.close()
+    except Exception:
+        pass
 
+def scan_host(ip, start_port, end_port):
+    """
+    Scans a single host for open TCP ports using threads.
+    """
+    print("\nScanning a discovered host")
+
+    q = Queue()
+    for port in range(start_port, end_port + 1):
+        q.put(port)
+
+    def worker():
+        while not q.empty():
+            scan_port(ip, q.get())
+            q.task_done()
+
+    for _ in range(PORT_THREADS):
+        threading.Thread(target=worker, daemon=True).start()
+
+    q.join()
+
+# ========== MAIN ==========
 def main():
-    """Main function to parse arguments and start the scan."""
-    if len(sys.argv) < 2:
-        print("Usage: python3 port_scanner.py <target_ip> [start_port] [end_port]")
-        sys.exit(1)
+    print("\nEthical Local Network Port Scanner")
+    print("Educational use only — scans private LANs only\n")
 
-    host = sys.argv[1]
-    start_port = int(sys.argv[2]) if len(sys.argv) > 2 else 1
-    end_port = int(sys.argv[3]) if len(sys.argv) > 3 else 1024
+    network = detect_local_network()
+    if not network:
+        print("Unable to detect a private local network.")
+        return
 
-    # Validate IP address
-    if not re.match(r"^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$", host):
-        print("Error: Invalid IP address")
-        logging.error(f"Invalid IP address: {host}")
-        sys.exit(1)
+    print("Private local network detected")
 
-    # Validate port range
+    try:
+        start_port = int(input("\nEnter start port: "))
+        end_port = int(input("Enter end port  : "))
+    except ValueError:
+        print("Ports must be valid numbers.")
+        return
+
     if not (1 <= start_port <= end_port <= 65535):
-        print("Error: Ports must be between 1 and 65535, and start_port <= end_port")
-        logging.error(f"Invalid port range: {start_port}-{end_port}")
-        sys.exit(1)
+        print("Invalid port range.")
+        return
 
-    scan_ports(host, start_port, end_port)
+    try:
+        hosts = discover_hosts(network)
+
+        if not hosts:
+            print("\nNo active devices found.")
+            return
+
+        print(f"\nActive devices found: {len(hosts)}")
+
+        for host in hosts:
+            scan_host(host, start_port, end_port)
+
+    except KeyboardInterrupt:
+        print("\n Scan interrupted by user.")
+
+    print("\nScan completed safely within the local network.")
 
 if __name__ == "__main__":
     main()
