@@ -1,0 +1,26 @@
+{
+  "name": "network-port-scanner",
+  "version": "1.0.0",
+  "description": "Ethical Local Network Port Scanner combining Node.js and Python",
+  "main": "index.js",
+  "bin": {
+    "network-scanner": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js scan",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "network",
+    "port-scanner",
+    "python",
+    "nodejs",
+    "cli"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "commander": "^11.1.0"
+  }
+}
